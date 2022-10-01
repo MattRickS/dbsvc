@@ -1,4 +1,4 @@
-import re
+from typing import Dict, List, Tuple
 
 
 class Statement:
@@ -24,10 +24,10 @@ class Statement:
     def _or(self, values):
         return f"({' OR '.join(f'({self.filters(filters)})' for filters in values)})"
 
-    def _is(self, values):
+    def _eq(self, values):
         return self._and(f"{self.field(k)} = {v}" for k, v in values.items())
 
-    def _is_not(self, values):
+    def _ne(self, values):
         return self._and(f"{self.field(k)} != {v}" for k, v in values.items())
 
     def _like(self, values):
@@ -42,35 +42,61 @@ class Statement:
     def _not_in(self, values):
         return self._and(f"{self.field(k)} NOT IN {v}" for k, v in values.items())
 
+    def _le(self, values):
+        return self._and(f"{self.field(k)} <= {v}" for k, v in values.items())
+
+    def _lt(self, values):
+        return self._and(f"{self.field(k)} < {v}" for k, v in values.items())
+
+    def _ge(self, values):
+        return self._and(f"{self.field(k)} >= {v}" for k, v in values.items())
+
+    def _gt(self, values):
+        return self._and(f"{self.field(k)} > {v}" for k, v in values.items())
+
     FILTER_METHODS = {
-        "is": _is,
-        "is_not": _is_not,
+        "eq": _eq,
+        "ne": _ne,
         "like": _like,
         "unlike": _unlike,
         "in": _in,
         "not_in": _not_in,
+        "le": _le,
+        "lt": _lt,
+        "ge": _ge,
+        "gt": _gt,
         "or": _or,
     }
 
     def filters(self, filters):
-        return self._and(
-            self.FILTER_METHODS[key](self, value) for key, value in filters.items()
-        )
+        return self._and(self.FILTER_METHODS[key](self, value) for key, value in filters.items())
 
-    def parse_joins(self, joins):
+    """
+    XXX: Could have presets for alias fields on classes
+
+    presets:
+    - class: Shot
+      alias: assets
+      joins:
+      - ["id", "shot_id", "AssetShot"]
+      - ["asset_id", "id", "Asset"]
+      default_fields: ["*"]
+    
+    Can then by used like
+
+        read("Shot", ["assets"]) -> implicitly uses default_fields SELECT `assets.*`
+        read("Shot", ["assets.name"]) -> explicit SELECT `assets.name`
+    """
+
+    def parse_joins(self, joins: Dict[str, List[Tuple[str, str, str, str]]]) -> str:
         # Self joins are supported, but the joins key must be an alias name
         assert self.cls not in joins
-        # field[method:class.field] where method is optional, EG,
-        # # "asset_id[is:Asset.id]"
-        # # "asset_id[Asset.id]"
-        PATTERN = r"(\w+)\[(?:(\w+):)?(\w+)\.(\w+)\]"
         stmt_joins = []
         for alias in self.aliases:
             curralias = self.cls
-            matches = re.findall(PATTERN, joins[alias])
-            for i, (field, join_method, join_class, join_field) in enumerate(matches):
-                method = {"is": "=", None: "=", "": "="}[join_method]
-                newalias = alias if i == len(matches) - 1 else f"{alias}{i}"
+            for i, (field, join_method, join_class, join_field) in enumerate(joins[alias]):
+                method = {"eq": "=", None: "=", "": "="}[join_method]
+                newalias = alias if i == len(joins) - 1 else f"{alias}{i}"
                 stmt_joins.append(
                     f"JOIN `{join_class}` AS `{newalias}` ON `{curralias}.{field}` {method} `{newalias}.{join_field}`"
                 )
@@ -101,14 +127,18 @@ if __name__ == "__main__":
     print(
         Statement.read(
             "Shot",
-            joins={"Asset": "id[AssetShot.shot_id].asset_id[Asset.id]"},
+            joins={
+                "Asset": [("id", "eq", "AssetShot", "shot_id"), ("asset_id", "eq", "Asset", "id")]
+            },
             fields=["name"],
         )
     )
     print(
         Statement.read(
             "Shot",
-            joins={"Asset": "id[AssetShot.shot_id].asset_id[Asset.id]"},
+            joins={
+                "Asset": [("id", "eq", "AssetShot", "shot_id"), ("asset_id", "eq", "Asset", "id")]
+            },
             fields=["name", "Asset.name", "Asset.other"],
         )
     )
@@ -116,8 +146,8 @@ if __name__ == "__main__":
         Statement.read(
             "Shot",
             joins={
-                "Asset": "id[AssetShot.shot_id].asset_id[Asset.id]",
-                "Camera": "id[Camera.shot_id]",
+                "Asset": [("id", "eq", "AssetShot", "shot_id"), ("asset_id", "eq", "Asset", "id")],
+                "Camera": [("id", "eq", "Camera", "shot_id")],
             },
             fields=["name", "Asset.name", "Camera.*"],
         )
@@ -126,30 +156,30 @@ if __name__ == "__main__":
         Statement.read(
             "Shot",
             joins={
-                "Asset": "id[AssetShot.shot_id].asset_id[Asset.id]",
-                "Camera": "id[Camera.shot_id]",
+                "Asset": [("id", "eq", "AssetShot", "shot_id"), ("asset_id", "eq", "Asset", "id")],
+                "Camera": [("id", "eq", "Camera", "shot_id")],
             },
             fields=["name", "Asset.name", "Camera.*"],
-            filters={"is": {"Asset.name": "apple"}},
+            filters={"eq": {"Asset.name": "apple"}},
         )
     )
     print(
         Statement.read(
             "Shot",
             fields=["name"],
-            filters={
-                "or": [{"is": {"name": "banana", "frames": 100}}, {"is": {"name": "apple"}}]
-            },
+            filters={"or": [{"eq": {"name": "banana", "frames": 100}}, {"eq": {"name": "apple"}}]},
         )
     )
     print(
         Statement.read(
             "Shot",
-            joins={"Asset": "id[AssetShot.shot_id].asset_id[Asset.id]"},
+            joins={
+                "Asset": [("id", "eq", "AssetShot", "shot_id"), ("asset_id", "eq", "Asset", "id")]
+            },
             filters={
                 "or": [
-                    {"is": {"name": "banana", "frames": 100}},
-                    {"is": {"Asset.name": "apple"}},
+                    {"eq": {"name": "banana", "frames": 100}},
+                    {"eq": {"Asset.name": "apple"}},
                 ]
             },
         )
@@ -157,11 +187,13 @@ if __name__ == "__main__":
     print(
         Statement.read(
             "Shot",
-            joins={"Asset": "id[AssetShot.shot_id].asset_id[Asset.id]"},
+            joins={
+                "Asset": [("id", "eq", "AssetShot", "shot_id"), ("asset_id", "eq", "Asset", "id")]
+            },
             filters={
                 "or": [
-                    {"is": {"name": "banana", "frames": 100}},
-                    {"is": {"Asset.name": "apple"}},
+                    {"eq": {"name": "banana", "frames": 100}},
+                    {"eq": {"Asset.name": "apple"}},
                 ],
                 "like": {"sequence": "sq1%"},
             },
