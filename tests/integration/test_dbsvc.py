@@ -62,7 +62,7 @@ def populate_shot_assets(db: api.Database):
         ),
         # Ordering
         (
-            {"tablename": "Shot", "ordering": [("id", constants.Order.Descending)]},
+            {"tablename": "Shot", "ordering": [("id", constants.Order.Desc)]},
             [{"id": 3, "name": "Third"}, {"id": 2, "name": "Second"}, {"id": 1, "name": "First"}],
         ),
         (
@@ -75,8 +75,8 @@ def populate_shot_assets(db: api.Database):
                     ]
                 },
                 "ordering": [
-                    ("Asset.id", constants.Order.Descending),
-                    ("name", constants.Order.Ascending),
+                    ("Asset.id", constants.Order.Desc),
+                    ("name", constants.Order.Asc),
                 ],
             },
             [

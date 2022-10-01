@@ -35,20 +35,43 @@ if TYPE_CHECKING:
     ALIAS_TABLES_T = Dict[str, Table]
 
 
-COMPARISON_MAP = {
-    "eq": "is_",
-    "ne": "is_not",
-    "in": "in_",
-    "not_in": "notin_",
-    "like": "like",
-    "unlike": "notlike",
-    "lt": "__lt__",
-    "le": "__le__",
-    "gt": "__gt__",
-    "ge": "__ge__",
-}
-FILTER_OR = "or"
-ALL_COLUMNS = "*"
+def uri(
+    dialect: str,
+    driver: str = None,
+    user: str = None,
+    password: str = None,
+    host: str = None,
+    port: int = None,
+    database: str = None,
+):
+    """
+    Generates a suitable sqlalchemy db URI in the format
+
+        dialect+driver://username:password@host:port/database
+
+    Examples:
+        > uri("sqlite", database="/path/to/file.sqlite")
+        sqlite:////path/to/file.sqlite
+
+        > uri("postgresql", user="root", host="localhost")
+        postgresql://root@localhost
+    """
+    uri = dialect
+    if driver:
+        uri += f"+{driver}"
+    uri += "://"
+    if user:
+        uri += user
+        if password:
+            uri += f":{password}"
+    if host:
+        uri += f"@{host}"
+        if port:
+            uri += f":{port}"
+    if database:
+        uri += f"/{database}"
+
+    return uri
 
 
 class Database:
@@ -118,7 +141,7 @@ class Database:
             order_by = []
             for colname, order in ordering:
                 column = self._column(table, colname, alias_tables=alias_tables)
-                method = asc if order == constants.Order.Ascending else desc
+                method = asc if order == constants.Order.Asc else desc
                 order_by.append(method(column))
             stmt = stmt.order_by(*order_by)
 
@@ -239,7 +262,7 @@ class Database:
         """
         for name in columns:
             coltable, colname = self._table_and_colname(table, name, alias_tables=alias_tables)
-            if colname == ALL_COLUMNS:
+            if colname == constants.ALL_COLUMNS:
                 for column in coltable.columns:
                     # Can't use `name`, it might be a wildcard. Explicitly join table and column
                     yield column.label(
@@ -251,7 +274,7 @@ class Database:
     def _cmp(self, column: Column, method: str, value: "VALUE_T") -> "ClauseElement":
         """Calls a comparison function for the column and value, eg, "eq" -> column.__eq__(value)"""
         try:
-            funcname = COMPARISON_MAP[method]
+            funcname = constants.COMPARISON_MAP[method]
             return getattr(column, funcname)(value)
         except exc.ArgumentError as e:
             raise exceptions.InvalidComparison(
@@ -297,7 +320,7 @@ class Database:
         """Generates the where clause for the filters"""
         stmts = []
         for key, value in filters.items():
-            if key == FILTER_OR:
+            if key == constants.FILTER_OR:
                 if not isinstance(value, (list, tuple)):
                     raise exceptions.InvalidFilters(
                         f"'or' filter requires a list of filters, got {type(value)}"
@@ -310,7 +333,7 @@ class Database:
                         )
                     ).self_group()
                 )
-            elif key not in COMPARISON_MAP:
+            elif key not in constants.COMPARISON_MAP:
                 raise exceptions.InvalidFilters(f"'{key}' is not a valid comparison method")
             elif not isinstance(value, dict):
                 raise exceptions.InvalidFilters(
@@ -326,61 +349,3 @@ class Database:
                         raise exceptions.InvalidFilters(str(e)) from e
 
         return and_(*stmts)
-
-
-if __name__ == "__main__":
-    memdb = Database("sqlite://", debug=True)
-    print(
-        memdb.create(
-            "Shot",
-            [{"id": 1, "name": "First"}, {"id": 2, "name": "Second"}, {"id": 3, "name": "Third"}],
-        )
-    )
-    print(
-        memdb.create(
-            "Asset",
-            [
-                {"id": 1, "name": "James"},
-                {"id": 2, "name": "Gun"},
-                {"id": 3, "name": "AstonMartin"},
-            ],
-        )
-    )
-    print(
-        memdb.create(
-            "AssetXShot",
-            [
-                {"asset_id": 1, "shot_id": 1},
-                {"asset_id": 2, "shot_id": 1},
-                {"asset_id": 3, "shot_id": 1},
-                {"asset_id": 1, "shot_id": 2},
-                {"asset_id": 2, "shot_id": 2},
-                {"asset_id": 1, "shot_id": 3},
-            ],
-        )
-    )
-    print(list(memdb.read("Shot")))
-    print(
-        list(
-            memdb.read(
-                "Shot",
-                colnames=["*", "Asset.*"],
-                joins={
-                    "Asset": [
-                        ("id", "eq", "AssetXShot", "shot_id"),
-                        ("asset_id", "eq", "Asset", "id"),
-                    ]
-                },
-                filters={
-                    "or": [
-                        {"gt": {"id": 1}, "lt": {"Asset.id": 2}},
-                        {"eq": {"Asset.name": "AstonMartin"}},
-                    ]
-                },
-            )
-        )
-    )
-    # print(memdb.update("Shot", {"name": "Other"}, filters={"eq": {"id": 1}}))
-    # print(list(memdb.read("Shot")))
-    # print(memdb.delete("Shot", filters={"eq": {"id": 2}}))
-    # print(list(memdb.read("Shot")))
