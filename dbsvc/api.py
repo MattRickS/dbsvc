@@ -19,7 +19,7 @@ from sqlalchemy import (
     Table,
 )
 
-from dbsvc.constants import Order
+from dbsvc import constants, exceptions
 
 if TYPE_CHECKING:
     from sqlalchemy.sql import ClauseElement
@@ -51,8 +51,8 @@ ALL_COLUMNS = "*"
 
 
 class Database:
-    def __init__(self, uri: str) -> None:
-        self._engine = create_engine(uri, echo=True)
+    def __init__(self, uri: str, debug: bool = False) -> None:
+        self._engine = create_engine(uri, echo=debug)
         self._engine.connect()
         self._metadata = self._build_tables()
         self._metadata.create_all(self._engine)
@@ -98,19 +98,16 @@ class Database:
         filters: "FILTERS_T" = None,
         joins: "JOINS_T" = None,
         limit: int = None,
-        ordering: List[Tuple[str, Order]] = None,
+        ordering: List[Tuple[str, constants.Order]] = None,
     ) -> Iterator["ENTITY_T"]:
         """SELECT {cls}.{fields} FROM {cls} [JOIN {joins}] WHERE {filters} [ORDER BY {ordering}][LIMIT {limit}]"""
         table = self._table(cls)
-        join_tables = self._joins(joins) if joins else None
+        join_tables = self._join_tables(joins) if joins else None
         columns = [self._column(table, col, join_tables=join_tables) for col in columns]
         stmt = select(*columns)
 
-        if join_tables:
-            tablestmt = table
-            for join_stmt in join_tables.values():
-                tablestmt = tablestmt.join(join_stmt)
-            stmt.select_from(tablestmt)
+        if joins:
+            stmt = self._joins(stmt, table, joins)
 
         if filters:
             where_clause = self._filters(table, filters, join_tables=join_tables)
@@ -120,7 +117,7 @@ class Database:
             order_by = []
             for colname, order in ordering:
                 column = self._column(table, colname, join_tables=join_tables)
-                method = asc if order == Order.Ascending else desc
+                method = asc if order == constants.Order.Ascending else desc
                 order_by.append(method(column))
             stmt = stmt.order_by(*order_by)
 
@@ -168,10 +165,16 @@ class Database:
 
     def _table(self, name: str) -> Table:
         """Fetches a table object matching the given name"""
-        return self._metadata.tables[name]
+        try:
+            return self._metadata.tables[name]
+        except KeyError:
+            raise exceptions.InvalidSchema(f"No table exists called {name}")
 
     def _column_or_table(self, table: Table, name: str) -> Union[Column, Table]:
-        return table if name == ALL_COLUMNS else getattr(table.c, name)
+        try:
+            return table if name == ALL_COLUMNS else getattr(table.c, name)
+        except AttributeError:
+            raise exceptions.InvalidSchema(f"Table {table.name} has no column {name}")
 
     """
     XXX: Could have presets for alias fields on classes
@@ -190,7 +193,9 @@ class Database:
         read("Shot", ["assets.name"]) -> explicit -> `assets.name`
     """
 
-    def _column(self, table: Table, name: str, join_tables=None) -> Union[Column, Table]:
+    def _column(
+        self, table: Table, name: str, join_tables: "JOIN_TABLES_T" = None
+    ) -> Union[Column, Table]:
         """
         Fetches the column from the default or joined table
 
@@ -203,36 +208,42 @@ class Database:
             return self._column_or_table(table, name)
 
         alias = name[:index]
-        if alias == table.name:
-            return self._column_or_table(table, name)
-
-        if not join_tables or alias not in join_tables:
-            raise Exception(f"Column requires alias that wasn't provided: {alias}")
-
         name = name[index + 1 :]
         if "." in name:
             raise Exception(
                 "Too many components in column, format must be either '{column}' or '{alias}.{column}'"
             )
 
+        if alias == table.name:
+            return self._column_or_table(table, name)
+
+        if not join_tables or alias not in join_tables:
+            raise Exception(f"Column requires alias that wasn't provided: {alias}")
+
         join_table = join_tables[alias]
         return self._column_or_table(join_table, name)
 
-    def _joins(self, table: Table, joins: "JOINS_T") -> "JOIN_TABLES_T":
+    def _join_tables(self, joins: "JOINS_T") -> "JOIN_TABLES_T":
+        """Generates a mapping of alias to the final table in a join"""
+        return {alias: self._table(j[-1][-2]) for alias, j in joins.items()}
+
+    def _joins(self, stmt: "ClauseElement", table: Table, joins: "JOINS_T") -> "ClauseElement":
         """Generates the join statements for each given alias"""
-        join_tables = {}
-        for alias, join_steps in joins.items():
-            stmt = table
+        stmt = stmt.select_from(table)
+        for join_steps in joins.values():
+            prev_table = table
             for field, join_method, join_class, join_field in join_steps:
                 join_table = self._metadata.tables[join_class]
                 stmt = stmt.join(
                     join_table,
                     self._cmp(
-                        self._column(stmt, field), join_method, self._column(join_table, join_field)
+                        self._column(prev_table, field),
+                        join_method,
+                        self._column(join_table, join_field),
                     ),
                 )
-            join_tables[alias] = stmt
-        return join_tables
+                prev_table = join_table
+        return stmt
 
     def _filters(
         self, table: Table, filters: "FILTERS_T", join_tables: "JOIN_TABLES_T" = None
@@ -258,16 +269,52 @@ class Database:
 
 
 if __name__ == "__main__":
-    memdb = Database("sqlite://")
+    memdb = Database("sqlite://", debug=True)
     print(
         memdb.create(
             "Shot",
             [{"id": 1, "name": "First"}, {"id": 2, "name": "Second"}, {"id": 3, "name": "Third"}],
         )
     )
+    print(
+        memdb.create(
+            "Asset",
+            [
+                {"id": 1, "name": "James"},
+                {"id": 2, "name": "Gun"},
+                {"id": 3, "name": "AstonMartin"},
+            ],
+        )
+    )
+    print(
+        memdb.create(
+            "AssetXShot",
+            [
+                {"asset_id": 1, "shot_id": 1},
+                {"asset_id": 2, "shot_id": 1},
+                {"asset_id": 3, "shot_id": 1},
+                {"asset_id": 1, "shot_id": 2},
+                {"asset_id": 2, "shot_id": 2},
+                {"asset_id": 1, "shot_id": 3},
+            ],
+        )
+    )
     print(list(memdb.read("Shot")))
-    print(list(memdb.read("Shot", filters={"lt": {"id": 3}})))
-    print(memdb.update("Shot", {"name": "Other"}, filters={"eq": {"id": 1}}))
-    print(list(memdb.read("Shot")))
-    print(memdb.delete("Shot", filters={"eq": {"id": 2}}))
-    print(list(memdb.read("Shot")))
+    print(
+        list(
+            memdb.read(
+                "Shot",
+                columns=["Shot.name", "Shot.id", "Asset.name"],
+                joins={
+                    "Asset": [
+                        ("id", "eq", "AssetXShot", "shot_id"),
+                        ("asset_id", "eq", "Asset", "id"),
+                    ]
+                },
+            )
+        )
+    )
+    # print(memdb.update("Shot", {"name": "Other"}, filters={"eq": {"id": 1}}))
+    # print(list(memdb.read("Shot")))
+    # print(memdb.delete("Shot", filters={"eq": {"id": 2}}))
+    # print(list(memdb.read("Shot")))
