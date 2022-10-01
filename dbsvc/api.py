@@ -22,7 +22,7 @@ from sqlalchemy import (
 from dbsvc import constants, exceptions
 
 if TYPE_CHECKING:
-    from sqlalchemy.sql import ClauseElement
+    from sqlalchemy.sql.elements import ClauseElement, Label
 
     VALUE_T = Union[str, int, float, bool]
     FILTER_VALUES_T = Dict[str, VALUE_T]
@@ -103,7 +103,7 @@ class Database:
         """Reads `columns` for all rows matching `filters`"""
         table = self._table(tablename)
         join_tables = self._join_tables(joins) if joins else None
-        columns = [self._column(table, col, join_tables=join_tables) for col in columns]
+        columns = self._select_columns(table, columns, join_tables=join_tables)
         stmt = select(*columns)
 
         if joins:
@@ -172,12 +172,6 @@ class Database:
         except KeyError:
             raise exceptions.InvalidSchema(f"No table exists called {name}")
 
-    def _column_or_table(self, table: Table, name: str) -> Union[Column, Table]:
-        try:
-            return table if name == ALL_COLUMNS else getattr(table.c, name)
-        except AttributeError:
-            raise exceptions.InvalidSchema(f"Table {table.name} has no column {name}")
-
     """
     XXX: Could have presets for aliases
 
@@ -195,35 +189,67 @@ class Database:
         read("Shot", ["assets.name"]) -> explicit -> `assets.name`
     """
 
-    def _column(
-        self, table: Table, name: str, join_tables: "JOIN_TABLES_T" = None
-    ) -> Union[Column, Table]:
+    def _table_and_colname(
+        self, table: Table, colname: str, join_tables: "JOIN_TABLES_T" = None
+    ) -> Tuple[Table, str]:
         """
-        Fetches the column from the default or joined table
-
         Column name format can be either '{column}' or '{table}.{column}'.
-        The former will use the column from the default table.
-        The latter will lookup the table to use from join_tables.
+        The former will return the default table and colname.
+        The latter will lookup the table to use from join_tables and split the colname.
         """
-        index = name.find(".")
+        index = colname.find(".")
         if index == -1:
-            return self._column_or_table(table, name)
+            return (table, colname)
 
-        alias = name[:index]
-        name = name[index + 1 :]
-        if "." in name:
+        alias = colname[:index]
+        colname = colname[index + 1 :]
+        if "." in colname:
             raise Exception(
                 "Too many components in column, format must be either '{column}' or '{alias}.{column}'"
             )
 
         if alias == table.name:
-            return self._column_or_table(table, name)
+            return (table, colname)
 
         if not join_tables or alias not in join_tables:
             raise Exception(f"Column requires alias that wasn't provided: {alias}")
 
         join_table = join_tables[alias]
-        return self._column_or_table(join_table, name)
+        return (join_table, colname)
+
+    def __column(self, table: Table, colname: str):
+        """Fetches the column from the table, raises an exception if invalid"""
+        try:
+            return getattr(table.c, colname)
+        except AttributeError:
+            raise exceptions.InvalidSchema(f"Table {table.name} has no column {colname}")
+
+    def _column(
+        self, table: Table, colname: str, join_tables: "JOIN_TABLES_T" = None
+    ) -> Union[Column, Table]:
+        """Fetches the column from the default or joined table"""
+        table, colname = self._table_and_colname(table, colname, join_tables=join_tables)
+        return self.__column(table, colname)
+
+    def _select_columns(
+        self, table: Table, columns: List[str], join_tables: "JOIN_TABLES_T"
+    ) -> List["Label"]:
+        """
+        Generates the columns to use in a select query with suitable labels.
+
+        If the given column name does not define a table/alias, the colname is the label.
+        If a table/alias is defined, the full table.column name is used as the label.
+        Wildcards are expanded but follow the same rules when which label is used.
+        """
+        for name in columns:
+            coltable, colname = self._table_and_colname(table, name, join_tables=join_tables)
+            if colname == ALL_COLUMNS:
+                for column in coltable.columns:
+                    yield column.label(
+                        f"{coltable.name}.{column.name}" if "." in name else column.name
+                    )
+            else:
+                yield self.__column(coltable, colname).label(name)
 
     def _join_tables(self, joins: "JOINS_T") -> "JOIN_TABLES_T":
         """Generates a mapping of alias to the final table in a join"""
@@ -306,7 +332,7 @@ if __name__ == "__main__":
         list(
             memdb.read(
                 "Shot",
-                columns=["Shot.name", "Shot.id", "Asset.name"],
+                columns=["name", "Asset.*"],
                 joins={
                     "Asset": [
                         ("id", "eq", "AssetXShot", "shot_id"),
