@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     ENTITY_T = COL_VALUES_T = Dict[str, VALUE_T]
     # {alias: [(column, method, table, column), ...]}
     JOINS_T = Dict[str, List[Tuple[str, str, str, str]]]
-    JOIN_TABLES_T = Dict[str, Table]
+    ALIAS_TABLES_T = Dict[str, Table]
 
 
 COMPARISON_MAP = {
@@ -103,21 +103,21 @@ class Database:
     ) -> Iterator["ENTITY_T"]:
         """Reads `colnames` for all rows matching `filters`"""
         table = self._table(tablename)
-        join_tables = self._join_tables(joins) if joins else None
-        columns = self._select_columns(table, colnames, join_tables=join_tables)
+        alias_tables = self._validate_joins(joins) if joins else None
+        columns = self._select_columns(table, colnames, alias_tables=alias_tables)
         stmt = select(*columns)
 
         if joins:
             stmt = self._joins(stmt, table, joins)
 
         if filters:
-            where_clause = self._filters(table, filters, join_tables=join_tables)
+            where_clause = self._filters(table, filters, alias_tables=alias_tables)
             stmt = stmt.where(where_clause)
 
         if ordering:
             order_by = []
             for colname, order in ordering:
-                column = self._column(table, colname, join_tables=join_tables)
+                column = self._column(table, colname, alias_tables=alias_tables)
                 method = asc if order == constants.Order.Ascending else desc
                 order_by.append(method(column))
             stmt = stmt.order_by(*order_by)
@@ -186,12 +186,12 @@ class Database:
     """
 
     def _table_and_colname(
-        self, table: Table, colname: str, join_tables: "JOIN_TABLES_T" = None
+        self, table: Table, colname: str, alias_tables: "ALIAS_TABLES_T" = None
     ) -> Tuple[Table, str]:
         """
         Column name format can be either '{column}' or '{table}.{column}'.
         The former will return the default table and colname.
-        The latter will lookup the table to use from join_tables and split the colname.
+        The latter will lookup the table to use from alias_tables and split the colname.
         """
         index = colname.find(".")
         if index == -1:
@@ -207,11 +207,11 @@ class Database:
         if alias == table.name:
             return (table, colname)
 
-        if not join_tables or alias not in join_tables:
+        if not alias_tables or alias not in alias_tables:
             raise exceptions.InvalidSchema(f"Column requires alias that wasn't provided: {alias}")
 
-        join_table = join_tables[alias]
-        return (join_table, colname)
+        alias_table = alias_tables[alias]
+        return (alias_table, colname)
 
     def __column(self, table: Table, colname: str):
         """Fetches the column from the table, raises an exception if invalid"""
@@ -221,14 +221,14 @@ class Database:
             raise exceptions.InvalidSchema(f"Table {table.name} has no column {colname}")
 
     def _column(
-        self, table: Table, colname: str, join_tables: "JOIN_TABLES_T" = None
+        self, table: Table, colname: str, alias_tables: "ALIAS_TABLES_T" = None
     ) -> Union[Column, Table]:
         """Fetches the column from the default or joined table"""
-        table, colname = self._table_and_colname(table, colname, join_tables=join_tables)
+        table, colname = self._table_and_colname(table, colname, alias_tables=alias_tables)
         return self.__column(table, colname)
 
     def _select_columns(
-        self, table: Table, columns: List[str], join_tables: "JOIN_TABLES_T"
+        self, table: Table, columns: List[str], alias_tables: "ALIAS_TABLES_T"
     ) -> List["Label"]:
         """
         Generates the columns to use in a select query with suitable labels.
@@ -238,7 +238,7 @@ class Database:
         Wildcards are expanded but follow the same rules when which label is used.
         """
         for name in columns:
-            coltable, colname = self._table_and_colname(table, name, join_tables=join_tables)
+            coltable, colname = self._table_and_colname(table, name, alias_tables=alias_tables)
             if colname == ALL_COLUMNS:
                 for column in coltable.columns:
                     # Can't use `name`, it might be a wildcard. Explicitly join table and column
@@ -260,9 +260,18 @@ class Database:
         except KeyError:
             raise exceptions.InvalidComparison(f"'{method}' is not a valid comparison method")
 
-    def _join_tables(self, joins: "JOINS_T") -> "JOIN_TABLES_T":
-        """Generates a mapping of alias to the final table in a join"""
-        return {alias: self._table(j[-1][-2]) for alias, j in joins.items()}
+    def _validate_joins(self, joins: "JOINS_T") -> "ALIAS_TABLES_T":
+        """Ensures joins are in a valid format and returns a mapping of alias to the final table"""
+        alias_tables = {}
+        for alias, join_steps in joins.items():
+            if not join_steps:
+                raise exceptions.InvalidJoin("Joins require at least one set of fields")
+            for steps in join_steps:
+                if len(steps) != 4:
+                    raise exceptions.InvalidJoin("Each join step requires four parameters")
+            alias_tables[alias] = self._table(join_steps[-1][-2])
+
+        return alias_tables
 
     def _joins(self, stmt: "ClauseElement", table: Table, joins: "JOINS_T") -> "ClauseElement":
         """Generates the join statements for each given alias"""
@@ -283,7 +292,7 @@ class Database:
         return stmt
 
     def _filters(
-        self, table: Table, filters: "FILTERS_T", join_tables: "JOIN_TABLES_T" = None
+        self, table: Table, filters: "FILTERS_T", alias_tables: "ALIAS_TABLES_T" = None
     ) -> "ClauseElement":
         """Generates the where clause for the filters"""
         stmts = []
@@ -296,21 +305,24 @@ class Database:
                 stmts.append(
                     or_(
                         *(
-                            self._filters(table, subfilters, join_tables=join_tables).self_group()
+                            self._filters(table, subfilters, alias_tables=alias_tables).self_group()
                             for subfilters in value
                         )
                     ).self_group()
                 )
+            elif key not in COMPARISON_MAP:
+                raise exceptions.InvalidFilters(f"'{key}' is not a valid comparison method")
             elif not isinstance(value, dict):
                 raise exceptions.InvalidFilters(
                     f"'{key}' filter requires a dictionary of columns and values, got {type(value)}"
                 )
             else:
                 for colname, val in value.items():
+                    # Let InvalidSchema errors raise separately
+                    column = self._column(table, colname, alias_tables=alias_tables)
                     try:
-                        column = self._column(table, colname, join_tables=join_tables)
                         stmts.append(self._cmp(column, key, val))
-                    except (exceptions.InvalidComparison, exceptions.InvalidSchema) as e:
+                    except exceptions.InvalidComparison as e:
                         raise exceptions.InvalidFilters(str(e)) from e
 
         return and_(*stmts)
