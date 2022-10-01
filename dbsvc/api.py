@@ -95,16 +95,16 @@ class Database:
     def read(
         self,
         tablename: str,
-        columns: List[str] = ("*",),
+        colnames: List[str] = ("*",),
         filters: "FILTERS_T" = None,
         joins: "JOINS_T" = None,
         limit: int = None,
         ordering: List[Tuple[str, constants.Order]] = None,
     ) -> Iterator["ENTITY_T"]:
-        """Reads `columns` for all rows matching `filters`"""
+        """Reads `colnames` for all rows matching `filters`"""
         table = self._table(tablename)
         join_tables = self._join_tables(joins) if joins else None
-        columns = self._select_columns(table, columns, join_tables=join_tables)
+        columns = self._select_columns(table, colnames, join_tables=join_tables)
         stmt = select(*columns)
 
         if joins:
@@ -200,7 +200,7 @@ class Database:
         alias = colname[:index]
         colname = colname[index + 1 :]
         if "." in colname:
-            raise Exception(
+            raise exceptions.InvalidSchema(
                 "Too many components in column, format must be either '{column}' or '{alias}.{column}'"
             )
 
@@ -208,7 +208,7 @@ class Database:
             return (table, colname)
 
         if not join_tables or alias not in join_tables:
-            raise Exception(f"Column requires alias that wasn't provided: {alias}")
+            raise exceptions.InvalidSchema(f"Column requires alias that wasn't provided: {alias}")
 
         join_table = join_tables[alias]
         return (join_table, colname)
@@ -352,7 +352,7 @@ if __name__ == "__main__":
         list(
             memdb.read(
                 "Shot",
-                columns=["*", "Asset.*"],
+                colnames=["*", "Asset.*"],
                 joins={
                     "Asset": [
                         ("id", "eq", "AssetXShot", "shot_id"),
