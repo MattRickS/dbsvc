@@ -28,8 +28,8 @@ if TYPE_CHECKING:
     FILTER_VALUES_T = Dict[str, VALUE_T]
     # {cmp: {column: value}, or: [{cmp: {column: value}}]}
     FILTERS_T = Dict[str, Union[FILTER_VALUES_T, List["FILTERS_T"]]]
-    ENTITY_T = FIELDS_T = Dict[str, VALUE_T]
-    # {alias: [(field, method, table, field), ...]}
+    ENTITY_T = COL_VALUES_T = Dict[str, VALUE_T]
+    # {alias: [(column, method, table, column), ...]}
     JOINS_T = Dict[str, List[Tuple[str, str, str, str]]]
     JOIN_TABLES_T = Dict[str, Table]
 
@@ -82,9 +82,9 @@ class Database:
 
         return metadata
 
-    def create(self, cls: str, list_of_values: List["ENTITY_T"]) -> List[int]:
+    def create(self, tablename: str, list_of_values: List["ENTITY_T"]) -> List[int]:
         """Inserts multiple rows into the database"""
-        table = self._table(cls)
+        table = self._table(tablename)
         # XXX: Generate IDs?
         with self._engine.connect() as conn:
             cursor = conn.execute(insert(table), list_of_values)
@@ -93,15 +93,15 @@ class Database:
 
     def read(
         self,
-        cls: str,
+        tablename: str,
         columns: List[str] = ("*",),
         filters: "FILTERS_T" = None,
         joins: "JOINS_T" = None,
         limit: int = None,
         ordering: List[Tuple[str, constants.Order]] = None,
     ) -> Iterator["ENTITY_T"]:
-        """SELECT {cls}.{fields} FROM {cls} [JOIN {joins}] WHERE {filters} [ORDER BY {ordering}][LIMIT {limit}]"""
-        table = self._table(cls)
+        """Reads `columns` for all rows matching `filters`"""
+        table = self._table(tablename)
         join_tables = self._join_tables(joins) if joins else None
         columns = [self._column(table, col, join_tables=join_tables) for col in columns]
         stmt = select(*columns)
@@ -129,23 +129,25 @@ class Database:
 
         return map(dict, rows)
 
-    def update(self, cls: str, field_values: "FIELDS_T", filters: "FILTERS_T" = None) -> int:
-        """UPDATE {cls} SET {field}={value}, ... WHERE {filters}"""
+    def update(
+        self, tablename: str, col_values: "COL_VALUES_T", filters: "FILTERS_T" = None
+    ) -> int:
+        """Updates the given values on all rows matching filters"""
         # TODO: bindparam options to perform different updates per row?
-        table = self._table(cls)
+        table = self._table(tablename)
         stmt = update(table)
         if filters:
             where_clause = self._filters(table, filters)
             stmt = stmt.where(where_clause)
-        stmt = stmt.values(field_values)
 
+        stmt = stmt.values(col_values)
         with self._engine.connect() as conn:
             cursor = conn.execute(stmt)
             return cursor.rowcount
 
-    def delete(self, cls: str, filters: "FILTERS_T" = None) -> int:
-        """DELETE FROM {cls} WHERE {filters}"""
-        table = self._table(cls)
+    def delete(self, tablename: str, filters: "FILTERS_T" = None) -> int:
+        """Deletes all rows matching filters"""
+        table = self._table(tablename)
         stmt = delete(table)
         if filters:
             where_clause = self._filters(table, filters)
@@ -177,7 +179,7 @@ class Database:
             raise exceptions.InvalidSchema(f"Table {table.name} has no column {name}")
 
     """
-    XXX: Could have presets for alias fields on classes
+    XXX: Could have presets for aliases
 
     presets:
     - class: Shot
@@ -185,11 +187,11 @@ class Database:
       joins:
       - ["id", "shot_id", "AssetShot"]
       - ["asset_id", "id", "Asset"]
-      default_fields: ["*"]
+      default_columns: ["*"]
     
     Can then by used like
 
-        read("Shot", ["assets"]) -> implicitly uses default_fields -> `assets.*`
+        read("Shot", ["assets"]) -> implicitly uses default_columns -> `assets.*`
         read("Shot", ["assets.name"]) -> explicit -> `assets.name`
     """
 
@@ -232,14 +234,14 @@ class Database:
         stmt = stmt.select_from(table)
         for join_steps in joins.values():
             prev_table = table
-            for field, join_method, join_class, join_field in join_steps:
+            for colname, join_method, join_class, join_colname in join_steps:
                 join_table = self._metadata.tables[join_class]
                 stmt = stmt.join(
                     join_table,
                     self._cmp(
-                        self._column(prev_table, field),
+                        self._column(prev_table, colname),
                         join_method,
-                        self._column(join_table, join_field),
+                        self._column(join_table, join_colname),
                     ),
                 )
                 prev_table = join_table
@@ -261,8 +263,8 @@ class Database:
                     ).self_group()
                 )
             else:
-                for field, val in value.items():
-                    column = self._column(table, field, join_tables=join_tables)
+                for colname, val in value.items():
+                    column = self._column(table, colname, join_tables=join_tables)
                     stmts.append(self._cmp(column, key, val))
 
         return and_(*stmts)
