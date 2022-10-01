@@ -6,6 +6,7 @@ from sqlalchemy import (
     asc,
     delete,
     desc,
+    exc,
     insert,
     or_,
     create_engine,
@@ -160,11 +161,6 @@ class Database:
     # ==================================================================================
     # Private
 
-    def _cmp(self, column: Column, method: str, value: "VALUE_T") -> "ClauseElement":
-        """Calls a comparison function for the column and value, eg, "eq" -> column.__eq__(value)"""
-        funcname = COMPARISON_MAP[method]
-        return getattr(column, funcname)(value)
-
     def _table(self, name: str) -> Table:
         """Fetches a table object matching the given name"""
         try:
@@ -245,11 +241,24 @@ class Database:
             coltable, colname = self._table_and_colname(table, name, join_tables=join_tables)
             if colname == ALL_COLUMNS:
                 for column in coltable.columns:
+                    # Can't use `name`, it might be a wildcard. Explicitly join table and column
                     yield column.label(
                         f"{coltable.name}.{column.name}" if "." in name else column.name
                     )
             else:
                 yield self.__column(coltable, colname).label(name)
+
+    def _cmp(self, column: Column, method: str, value: "VALUE_T") -> "ClauseElement":
+        """Calls a comparison function for the column and value, eg, "eq" -> column.__eq__(value)"""
+        try:
+            funcname = COMPARISON_MAP[method]
+            return getattr(column, funcname)(value)
+        except exc.ArgumentError as e:
+            raise exceptions.InvalidComparison(
+                f"Comparison '{method}' got unexpected type {type(value)} for column '{column.name}'"
+            )
+        except KeyError:
+            raise exceptions.InvalidComparison(f"'{method}' is not a valid comparison method")
 
     def _join_tables(self, joins: "JOINS_T") -> "JOIN_TABLES_T":
         """Generates a mapping of alias to the final table in a join"""
@@ -280,6 +289,10 @@ class Database:
         stmts = []
         for key, value in filters.items():
             if key == FILTER_OR:
+                if not isinstance(value, (list, tuple)):
+                    raise exceptions.InvalidFilters(
+                        f"'or' filter requires a list of filters, got {type(value)}"
+                    )
                 stmts.append(
                     or_(
                         *(
@@ -288,10 +301,17 @@ class Database:
                         )
                     ).self_group()
                 )
+            elif not isinstance(value, dict):
+                raise exceptions.InvalidFilters(
+                    f"'{key}' filter requires a dictionary of columns and values, got {type(value)}"
+                )
             else:
                 for colname, val in value.items():
-                    column = self._column(table, colname, join_tables=join_tables)
-                    stmts.append(self._cmp(column, key, val))
+                    try:
+                        column = self._column(table, colname, join_tables=join_tables)
+                        stmts.append(self._cmp(column, key, val))
+                    except (exceptions.InvalidComparison, exceptions.InvalidSchema) as e:
+                        raise exceptions.InvalidFilters(str(e)) from e
 
         return and_(*stmts)
 
@@ -332,11 +352,17 @@ if __name__ == "__main__":
         list(
             memdb.read(
                 "Shot",
-                columns=["name", "Asset.*"],
+                columns=["*", "Asset.*"],
                 joins={
                     "Asset": [
                         ("id", "eq", "AssetXShot", "shot_id"),
                         ("asset_id", "eq", "Asset", "id"),
+                    ]
+                },
+                filters={
+                    "or": [
+                        {"gt": {"id": 1}, "lt": {"Asset.id": 2}},
+                        {"eq": {"Asset.name": "AstonMartin"}},
                     ]
                 },
             )
