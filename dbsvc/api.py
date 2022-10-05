@@ -14,19 +14,15 @@ from sqlalchemy import (
     create_engine,
     select,
     update,
-    Column,
-    Index,
-    Integer,
     MetaData,
-    String,
-    Table,
 )
 
 from dbsvc import constants, exceptions
 
 if TYPE_CHECKING:
-    from sqlalchemy.sql.elements import ClauseElement, Label
+    from sqlalchemy import Column, Table
     from sqlalchemy.engine import Connection
+    from sqlalchemy.sql.elements import ClauseElement, Label
 
     VALUE_T = Union[str, int, float, bool]
     FILTER_VALUES_T = Dict[str, VALUE_T]
@@ -115,16 +111,21 @@ class IDManager:
         return values.get(id_column)
 
 
-class Database:
-    def __init__(self, uri: str, id_manager: IDManager = None, debug: bool = False) -> None:
-        self._engine = create_engine(uri, echo=debug)
-        self._metadata = MetaData()
-        self._build_tables(self._metadata)
-        self._metadata.create_all(self._engine)
-        self._id_manager = id_manager
+class Schema:
+    def build(self, metadata: MetaData):
+        """Builds the schema metadata"""
 
-    def _build_tables(self, metadata):
-        pass
+
+class Database:
+    def __init__(
+        self, uri: str, schema: Schema, id_manager: IDManager = None, debug: bool = False
+    ) -> None:
+        self._engine = create_engine(uri, echo=debug)
+        self._id_manager = id_manager
+        self._metadata = MetaData()
+
+        schema.build(self._metadata)
+        self._metadata.create_all(self._engine)
 
     def create(
         self,
@@ -304,7 +305,7 @@ class Database:
             with self._engine.begin() as txn:
                 yield txn
 
-    def _table(self, name: str) -> Table:
+    def _table(self, name: str) -> "Table":
         """Fetches a table object matching the given name"""
         try:
             return self._metadata.tables[name]
@@ -329,8 +330,8 @@ class Database:
     """
 
     def _table_and_colname(
-        self, table: Table, colname: str, alias_tables: "ALIAS_TABLES_T" = None
-    ) -> Tuple[Table, str]:
+        self, table: "Table", colname: str, alias_tables: "ALIAS_TABLES_T" = None
+    ) -> Tuple["Table", str]:
         """
         Column name format can be either '{column}' or '{table}.{column}'.
         The former will return the default table and colname.
@@ -356,7 +357,7 @@ class Database:
         alias_table = alias_tables[alias]
         return (alias_table, colname)
 
-    def __column(self, table: Table, colname: str):
+    def __column(self, table: "Table", colname: str):
         """Fetches the column from the table, raises an exception if invalid"""
         try:
             return getattr(table.c, colname)
@@ -364,14 +365,14 @@ class Database:
             raise exceptions.InvalidSchema(f"Table {table.name} has no column {colname}")
 
     def _column(
-        self, table: Table, colname: str, alias_tables: "ALIAS_TABLES_T" = None
-    ) -> Union[Column, Table]:
+        self, table: "Table", colname: str, alias_tables: "ALIAS_TABLES_T" = None
+    ) -> Union["Column", "Table"]:
         """Fetches the column from the default or joined table"""
         table, colname = self._table_and_colname(table, colname, alias_tables=alias_tables)
         return self.__column(table, colname)
 
     def _select_columns(
-        self, table: Table, columns: List[str], alias_tables: "ALIAS_TABLES_T"
+        self, table: "Table", columns: List[str], alias_tables: "ALIAS_TABLES_T"
     ) -> List["Label"]:
         """
         Generates the columns to use in a select query with suitable labels.
@@ -391,7 +392,7 @@ class Database:
             else:
                 yield self.__column(coltable, colname).label(name)
 
-    def _cmp(self, column: Column, method: str, value: "VALUE_T") -> "ClauseElement":
+    def _cmp(self, column: "Column", method: str, value: "VALUE_T") -> "ClauseElement":
         """Calls a comparison function for the column and value, eg, "eq" -> column.__eq__(value)"""
         try:
             funcname = constants.COMPARISON_MAP[method]
@@ -416,7 +417,7 @@ class Database:
 
         return alias_tables
 
-    def _joins(self, stmt: "ClauseElement", table: Table, joins: "JOINS_T") -> "ClauseElement":
+    def _joins(self, stmt: "ClauseElement", table: "Table", joins: "JOINS_T") -> "ClauseElement":
         """Generates the join statements for each given alias"""
         stmt = stmt.select_from(table)
         for join_steps in joins.values():
@@ -435,7 +436,7 @@ class Database:
         return stmt
 
     def _filters(
-        self, table: Table, filters: "FILTERS_T", alias_tables: "ALIAS_TABLES_T" = None
+        self, table: "Table", filters: "FILTERS_T", alias_tables: "ALIAS_TABLES_T" = None
     ) -> "ClauseElement":
         """Generates the where clause for the filters"""
         stmts = []

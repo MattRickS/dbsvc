@@ -4,46 +4,46 @@ from dbsvc import exceptions
 from unittest import mock
 
 from dbsvc import api, constants
+from sqlalchemy import Column, Index, Integer, String, Table
 
 
 class TestIDManager(api.IDManager):
-    def generate_id(self, table: api.Table) -> int:
+    def generate_id(self, table: Table) -> int:
         """sqlite doesn't support 64 bit integers"""
         return int(uuid.uuid1()) >> 96
 
 
-class TestDB(api.Database):
-    def _build_tables(self, metadata):
-        shot_table = api.Table(
+class TestSchema(api.Schema):
+    def build(self, metadata: api.MetaData):
+        Table(
             "Shot",
             metadata,
-            api.Column("id", api.Integer, primary_key=True),
-            api.Column("name", api.String, nullable=False),
+            Column("id", Integer, primary_key=True),
+            Column("name", String, nullable=False),
         )
-        asset_table = api.Table(
+        Table(
             "Asset",
             metadata,
-            api.Column("id", api.Integer, primary_key=True),
-            api.Column("name", api.String, nullable=False),
+            Column("id", Integer, primary_key=True),
+            Column("name", String, nullable=False),
         )
-        asset_shot_table = api.Table(
+        asset_shot_table = Table(
             "AssetXShot",
             metadata,
-            api.Column("asset_id", api.Integer, nullable=False),
-            api.Column("shot_id", api.Integer, nullable=False),
+            Column("asset_id", Integer, nullable=False),
+            Column("shot_id", Integer, nullable=False),
         )
-        api.Index(
+        Index(
             "asset_shot",
             asset_shot_table.c.asset_id,
             asset_shot_table.c.shot_id,
             unique=True,
         )
-        return metadata
 
 
 @pytest.fixture(scope="function")
 def memdb():
-    return TestDB("sqlite://", id_manager=TestIDManager(), debug=True)
+    return api.Database("sqlite://", TestSchema(), id_manager=TestIDManager(), debug=True)
 
 
 def populate_shot_assets(db: api.Database):
