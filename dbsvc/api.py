@@ -1,4 +1,5 @@
 from __future__ import annotations
+import uuid
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Tuple, Union, TYPE_CHECKING
 
@@ -20,7 +21,6 @@ from sqlalchemy import (
     String,
     Table,
 )
-import sqlalchemy
 
 from dbsvc import constants, exceptions
 
@@ -85,56 +85,73 @@ def sql_exception_handler():
         raise exceptions.DatabaseError(e) from e
 
 
+class IDManager:
+    """
+    Utility component for generating IDs for rows being created.
+
+    Default behaviour adds a 64 bit to an `id` column if the table supports it
+    and one is not already provided.
+    """
+
+    def id_column_for_table(self, table: Table) -> Union[str, None]:
+        return "id" if hasattr(table.c, "id") else None
+
+    def generate_id(self, table: Table) -> int:
+        """Only called when the table requires an ID"""
+        return int(uuid.uuid1()) >> 64
+
+    def add_entity_id(self, table: Table, values: "ENTITY_T") -> "ENTITY_T":
+        id_column = self.id_column_for_table(table)
+        if not id_column or id_column in values:
+            return values
+
+        entity = values.copy()
+        entity["id"] = self.generate_id(table)
+        return entity
+
+    def get_entity_id(self, table: Table, values: "ENTITY_T") -> int:
+        """Read the ID value from an entity"""
+        id_column = self.id_column_for_table(table)
+        return values.get(id_column)
+
+
 class Database:
-    def __init__(self, uri: str, debug: bool = False) -> None:
+    def __init__(self, uri: str, id_manager: IDManager = None, debug: bool = False) -> None:
         self._engine = create_engine(uri, echo=debug)
-        self._metadata = self._build_tables()
+        self._metadata = MetaData()
+        self._build_tables(self._metadata)
         self._metadata.create_all(self._engine)
+        self._id_manager = id_manager
 
-    def _build_tables(self):
-        metadata = MetaData()
-
-        shot_table = Table(
-            "Shot",
-            metadata,
-            Column("id", Integer, primary_key=True),
-            Column("name", String, nullable=False),
-        )
-        asset_table = Table(
-            "Asset",
-            metadata,
-            Column("id", Integer, primary_key=True),
-            Column("name", String, nullable=False),
-        )
-        asset_shot_table = Table(
-            "AssetXShot",
-            metadata,
-            Column("asset_id", Integer, nullable=False),
-            Column("shot_id", Integer, nullable=False),
-        )
-        Index(
-            "asset_shot",
-            asset_shot_table.c.asset_id,
-            asset_shot_table.c.shot_id,
-            unique=True,
-        )
-
-        return metadata
+    def _build_tables(self, metadata):
+        pass
 
     def create(
         self,
         tablename: str,
         list_of_values: List["ENTITY_T"],
         transaction: "Connection" = None,
-    ) -> int:
+    ) -> List[Any]:
         """Inserts multiple rows into the database"""
         table = self._table(tablename)
-        # XXX: Generate IDs?
+
+        if self._id_manager:
+            list_of_values = [
+                self._id_manager.add_entity_id(table, values) for values in list_of_values
+            ]
+
         with self._transaction(transaction=transaction) as conn:
             with sql_exception_handler():
                 cursor = conn.execute(insert(table), list_of_values)
-                # TODO: Better return info
-                return cursor.rowcount
+                if not cursor.rowcount == len(list_of_values):
+                    raise exceptions.IncorrectRowCount(
+                        f"Only created {cursor.rowcount}/{len(list_of_values)} rows"
+                    )
+
+        if self._id_manager:
+            return [self._id_manager.get_entity_id(table, values) for values in list_of_values]
+
+        return [None] * len(list_of_values)
 
     def read(
         self,
@@ -261,7 +278,9 @@ class Database:
             for i, cmd in enumerate(cmds):
                 try:
                     if cmd["cmd"] == "read":
-                        raise exceptions.InvalidBatchCommand("Read commands unsupported by batch", i)
+                        raise exceptions.InvalidBatchCommand(
+                            "Read commands unsupported by batch", i
+                        )
                     results.append(getattr(self, cmd["cmd"])(**cmd["kwargs"], transaction=txn))
                 except (
                     AttributeError,
@@ -344,12 +363,16 @@ class Database:
         except AttributeError:
             raise exceptions.InvalidSchema(f"Table {table.name} has no column {colname}")
 
-    def _column(self, table: Table, colname: str, alias_tables: "ALIAS_TABLES_T" = None) -> Union[Column, Table]:
+    def _column(
+        self, table: Table, colname: str, alias_tables: "ALIAS_TABLES_T" = None
+    ) -> Union[Column, Table]:
         """Fetches the column from the default or joined table"""
         table, colname = self._table_and_colname(table, colname, alias_tables=alias_tables)
         return self.__column(table, colname)
 
-    def _select_columns(self, table: Table, columns: List[str], alias_tables: "ALIAS_TABLES_T") -> List["Label"]:
+    def _select_columns(
+        self, table: Table, columns: List[str], alias_tables: "ALIAS_TABLES_T"
+    ) -> List["Label"]:
         """
         Generates the columns to use in a select query with suitable labels.
 
@@ -362,7 +385,9 @@ class Database:
             if colname == constants.ALL_COLUMNS:
                 for column in coltable.columns:
                     # Can't use `name`, it might be a wildcard. Explicitly join table and column
-                    yield column.label(f"{coltable.name}.{column.name}" if "." in name else column.name)
+                    yield column.label(
+                        f"{coltable.name}.{column.name}" if "." in name else column.name
+                    )
             else:
                 yield self.__column(coltable, colname).label(name)
 
@@ -409,13 +434,17 @@ class Database:
                 prev_table = join_table
         return stmt
 
-    def _filters(self, table: Table, filters: "FILTERS_T", alias_tables: "ALIAS_TABLES_T" = None) -> "ClauseElement":
+    def _filters(
+        self, table: Table, filters: "FILTERS_T", alias_tables: "ALIAS_TABLES_T" = None
+    ) -> "ClauseElement":
         """Generates the where clause for the filters"""
         stmts = []
         for key, value in filters.items():
             if key == constants.FILTER_OR:
                 if not isinstance(value, (list, tuple)):
-                    raise exceptions.InvalidFilters(f"'or' filter requires a list of filters, got {type(value)}")
+                    raise exceptions.InvalidFilters(
+                        f"'or' filter requires a list of filters, got {type(value)}"
+                    )
                 stmts.append(
                     or_(
                         *(

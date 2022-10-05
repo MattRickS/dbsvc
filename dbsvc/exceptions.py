@@ -24,3 +24,6 @@ class InvalidBatchCommand(DatabaseError):
     def __init__(self, msg: str, index: int) -> None:
         super().__init__(msg)
         self.index = index
+
+class IncorrectRowCount(DatabaseError):
+    """Raised when an executed command didn't modify the expected number of rows"""
