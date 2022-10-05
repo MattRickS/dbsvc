@@ -75,9 +75,7 @@ class FilterDataValidator(validate.Validator):
                 for subfilters in val:
                     self.__call__(subfilters)
             elif not isinstance(val, dict):
-                raise ValidationError(
-                    f"Comparison filter '{key}' requires a dict of column: value pairs"
-                )
+                raise ValidationError(f"Comparison filter '{key}' requires a dict of column: value pairs")
             else:
                 for colname, colvalue in val.items():
                     if not re.match(TABLE_COLUMN_PATTERN, colname):

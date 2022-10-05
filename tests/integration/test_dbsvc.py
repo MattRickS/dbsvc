@@ -161,3 +161,123 @@ def test_read__invalid_schema__fails(kwargs):
     populate_shot_assets(memdb)
     with pytest.raises(exceptions.InvalidSchema):
         list(memdb.read(**kwargs))
+
+
+def test_batch__success():
+    memdb = api.Database("sqlite://", debug=True)
+    batch = [
+        {
+            "cmd": "create",
+            "kwargs": {
+                "tablename": "Shot",
+                "list_of_values": [
+                    {"id": 123, "name": "ShotA"},
+                    {"id": 456, "name": "ShotB"},
+                ],
+            },
+        },
+        {
+            "cmd": "create",
+            "kwargs": {
+                "tablename": "Asset",
+                "list_of_values": [
+                    {"id": 321, "name": "AssetA"},
+                    {"id": 654, "name": "AssetB"},
+                ],
+            },
+        },
+        {
+            "cmd": "update",
+            "kwargs": {
+                "tablename": "Shot",
+                "filters": {"eq": {"id": 123}},
+                "values": {"name": "ShotC"},
+            },
+        },
+        {
+            "cmd": "delete",
+            "kwargs": {
+                "tablename": "Asset",
+                "filters": {"gt": {"id": 500}},
+            },
+        },
+    ]
+    ret = memdb.batch(batch)
+    # Return value of each command in order
+    assert ret == [2, 2, 1, 1]
+
+    assert list(memdb.read("Shot")) == [
+        {"id": 123, "name": "ShotC"},
+        {"id": 456, "name": "ShotB"},
+    ]
+    assert list(memdb.read("Asset")) == [{"id": 321, "name": "AssetA"}]
+
+
+@pytest.mark.parametrize(
+    "invalid_cmd",
+    [
+        # Invalid type
+        [],
+        # No arguments
+        {},
+        # Invalid command
+        {"cmd": "not a real command", "kwargs": {"tablename": "Shot"}},
+        # Missing kwargs
+        {"cmd": "create"},
+        # Read commands not supported
+        {"cmd": "read", "kwargs": {"tablename": "Shot"}},
+        # Invalid types
+        {
+            "cmd": "create",
+            "kwargs": {
+                "tablename": "Shot",
+                "list_of_values": [{"name": 1, "id": "abc"}],
+            },
+        },
+    ],
+)
+def test_batch__errors__transaction_rolled_back(invalid_cmd):
+    memdb = api.Database("sqlite://", debug=True)
+    batch = [
+        {
+            "cmd": "create",
+            "kwargs": {
+                "tablename": "Shot",
+                "list_of_values": [
+                    {"id": 123, "name": "ShotA"},
+                    {"id": 456, "name": "ShotB"},
+                ],
+            },
+        },
+        {
+            "cmd": "create",
+            "kwargs": {
+                "tablename": "Asset",
+                "list_of_values": [
+                    {"id": 321, "name": "AssetA"},
+                    {"id": 654, "name": "AssetB"},
+                ],
+            },
+        },
+        {
+            "cmd": "update",
+            "kwargs": {
+                "tablename": "Shot",
+                "filters": {"eq": {"id": 123}},
+                "values": {"name": "ShotC"},
+            },
+        },
+        {
+            "cmd": "delete",
+            "kwargs": {
+                "tablename": "Asset",
+                "filters": {"gt": {"id": 500}},
+            },
+        },
+        invalid_cmd,
+    ]
+    with pytest.raises(exceptions.InvalidBatchCommand):
+        memdb.batch(batch)
+
+    assert list(memdb.read("Shot")) == []
+    assert list(memdb.read("Asset")) == []
