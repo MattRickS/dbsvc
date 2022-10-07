@@ -75,7 +75,9 @@ class FilterDataValidator(validate.Validator):
                 for subfilters in val:
                     self.__call__(subfilters)
             elif not isinstance(val, dict):
-                raise ValidationError(f"Comparison filter '{key}' requires a dict of column: value pairs")
+                raise ValidationError(
+                    f"Comparison filter '{key}' requires a dict of column: value pairs"
+                )
             else:
                 for colname, colvalue in val.items():
                     if not re.match(TABLE_COLUMN_PATTERN, colname):
@@ -117,6 +119,15 @@ class DeleteRequest(Schema):
     filters = FiltersField(load_default=None)
 
 
+class BatchCommandSchema(Schema):
+    cmd = fields.Str(validate=validate.OneOf(["create", "read", "update", "delete"]))
+    kwargs = fields.Dict()
+
+
+class BatchRequest(Schema):
+    commands = fields.List(fields.Nested(BatchCommandSchema), validate=validate.Length(min=1))
+
+
 class EntityResource:
     def __init__(self, db: api.Database) -> None:
         self._db = db
@@ -124,7 +135,8 @@ class EntityResource:
     @interface(CreateRequest, status=201)
     def create(self, request: CreateRequest):
         # TODO: Generate and return IDs
-        self._db.create(request["tablename"], request["values"])
+        ids = self._db.create(request["tablename"], request["values"])
+        return {"ids": ids}
 
     @interface(ReadRequest)
     def read(self, request: ReadRequest):
@@ -140,16 +152,22 @@ class EntityResource:
 
     @interface(UpdateRequest)
     def update(self, request: UpdateRequest):
-        self._db.update(request["tablename"], request["values"], filters=request["filters"])
+        count = self._db.update(request["tablename"], request["values"], filters=request["filters"])
+        return {"count": count}
 
-    @interface(DeleteRequest, status=204)
+    @interface(DeleteRequest)
     def delete(self, request: DeleteRequest):
-        self._db.delete(request["tablename"], filters=request["filters"])
+        count = self._db.delete(request["tablename"], filters=request["filters"])
+        return {"count": count}
+
+    @interface(BatchRequest)
+    def batch(self, request: DeleteRequest):
+        results = self._db.batch(request["commands"])
+        return {"results": results}
 
 
-def build() -> bottle.Bottle:
-    # TODO: Configurable database args
-    db = api.Database("sqlite://")
+def build(uri: str, schema: api.Schema, id_manager: api.IDManager = None) -> bottle.Bottle:
+    db = api.Database(uri, schema, id_manager=id_manager)
     resource = EntityResource(db)
 
     service = bottle.Bottle()
@@ -159,5 +177,6 @@ def build() -> bottle.Bottle:
     service.post(path, callback=resource.create)
     service.put(path, callback=resource.update)
     service.delete(path, callback=resource.delete)
+    service.post("/$batch/", callback=resource.batch)
 
     return service
