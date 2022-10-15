@@ -43,6 +43,7 @@ class Schema(api.Schema):
             metadata,
             Column("id", Integer, primary_key=True),
             Column("name", String, nullable=False),
+            Column("project_id", Integer, nullable=False),
             Column("sequence_id", Integer, nullable=False),
             Column("frame_start", Integer),
             Column("frame_end", Integer),
@@ -51,6 +52,7 @@ class Schema(api.Schema):
             "unique_shot_name_sequence_id",
             shot_table.c.name,
             shot_table.c.sequence_id,
+            shot_table.c.project_id,
             unique=True,
         )
 
