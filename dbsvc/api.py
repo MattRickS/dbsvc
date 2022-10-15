@@ -127,6 +127,9 @@ class Database:
         schema.build(self._metadata)
         self._metadata.create_all(self._engine)
 
+    # ==================================================================================
+    # CRUD
+
     def create(
         self,
         tablename: str,
@@ -292,6 +295,12 @@ class Database:
                     raise exceptions.InvalidBatchCommand(e, i)
 
         return results
+
+    # ==================================================================================
+    # Utility
+
+    def has_field(self, tablename: str, fieldname: str) -> bool:
+        return fieldname in self._table(tablename).c
 
     # ==================================================================================
     # Private
