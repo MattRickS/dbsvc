@@ -5,7 +5,7 @@ Loads a super basic animation studio schema with in-memory sqlite db.
 """
 import click
 
-from sqlalchemy import func, Column, DateTime, Index, Integer, String, Table
+from sqlalchemy import func, Boolean, Column, DateTime, Index, Integer, String, Table
 
 from dbsvc import api, service
 
@@ -60,11 +60,13 @@ class Schema(api.Schema):
             Column("id", Integer, primary_key=True),
             Column("type", String, nullable=False),
             Column("name", String, nullable=False),
+            Column("variant", String, nullable=False),
             Column("project_id", Integer, nullable=False),
         )
         Index(
             "unique_asset_name_project_id",
             asset_table.c.name,
+            asset_table.c.variant,
             asset_table.c.project_id,
             unique=True,
         )
@@ -82,28 +84,67 @@ class Schema(api.Schema):
             unique=True,
         )
 
+        task_table = Table(
+            "Task",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("entity_table", String, nullable=False),
+            Column("entity_id", Integer, nullable=False),
+            Column("name", String, nullable=False),
+            Column("status", Integer, nullable=False, default=0),
+            Column("assignee", String),
+            Column("due_date", DateTime),
+        )
+        Index(
+            "unique_tasks",
+            task_table.c.entity_table,
+            task_table.c.entity_id,
+            task_table.c.name,
+            unique=True,
+        )
+
         output_table = Table(
             "Output",
             metadata,
             Column("id", Integer, primary_key=True),
-            Column("context", String, nullable=False),
+            # Context fields
+            Column("project", String, nullable=False),
+            Column("sequence", String, nullable=False),
+            Column("shot", String, nullable=False),
+            Column("task", String, nullable=False),
+            # Output fields
             Column("datatype", String, nullable=False),
             Column("version", Integer, nullable=False),
-            Column("template", String, nullable=False),
-            Column("ext", String, nullable=False),
+            Column("format", String, nullable=False),
+            Column("pathtemplate", String, nullable=False),
+            Column("relative_path", String, nullable=False, index=True, unique=True),
+            # Specific datatype/context fields
             Column("frame_range", String),  # eg, 1-10,19
             Column("variant", String),
-            Column("status", Integer, default=0),
+            Column("name", String),  # Uniqueness identifier, eg, texture names
+            Column("lod", String),
+            Column("instance", String),
+            # Approval fields
+            Column("is_approved", Boolean, default=False),
+            Column("approved_at", DateTime, default=None),
+            Column("approved_by", String, default=None),
+            Column("is_starred", Boolean, default=False),
+            Column("starred_at", DateTime, default=None),
+            Column("starred_by", String, default=None),
+            # Metadata fields
+            # TODO: utcnow. sqlalchemy-utc or home rolled version
             Column("created_at", DateTime, nullable=False, default=func.now()),
             Column("created_by", String, nullable=False),
-            Column("updated_at", DateTime, default=func.now()),
-            Column("updated_by", String, nullable=False),
-            Column("approved_at", DateTime),
-            Column("approved_by", String),
+            Column("status", Integer, default=0),
+            Column("status_at", DateTime, default=None),
+            Column("status_by", String, default=None),
         )
         Index(
             "unique_output",
-            output_table.c.context,
+            output_table.c.project,
+            output_table.c.sequence,
+            output_table.c.shot,
+            output_table.c.task,
             output_table.c.datatype,
             output_table.c.version,
             unique=True,
