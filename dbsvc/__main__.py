@@ -108,19 +108,22 @@ class Schema(api.Schema):
             metadata,
             Column("id", Integer, primary_key=True),
             # Context fields
+            Column("env", String, nullable=False),
             Column("project", String, nullable=False),
+            Column("pipeline", String, nullable=False),
             Column("sequence", String, nullable=False),
             Column("shot", String, nullable=False),
+            Column("department", String, nullable=False),
             Column("task", String, nullable=False),
             # Output fields
             Column("datatype", String, nullable=False),
+            Column("variant", String),
             Column("version", Integer, nullable=False),
             Column("format", String, nullable=False),
             Column("pathtemplate", String, nullable=False),
             Column("relative_path", String, nullable=False, index=True, unique=True),
             # Specific datatype/context fields
             Column("frame_range", String),  # eg, 1-10,19
-            Column("variant", String),
             Column("name", String),  # Uniqueness identifier, eg, texture names
             Column("lod", String),
             Column("instance", String),
@@ -141,11 +144,14 @@ class Schema(api.Schema):
         )
         Index(
             "unique_output",
+            output_table.c.env,
             output_table.c.project,
+            output_table.c.pipeline,
             output_table.c.sequence,
             output_table.c.shot,
             output_table.c.task,
             output_table.c.datatype,
+            output_table.c.variant,
             output_table.c.version,
             unique=True,
         )
