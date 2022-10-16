@@ -426,13 +426,18 @@ class Database:
 
         return alias_tables
 
+    # TODO: Alter this so that it's a single "join step" per alias.
+    #       But how to ensure they're constructed in order? Would need to sort by dependency, should be doable
     def _joins(self, stmt: "ClauseElement", table: "Table", joins: "JOINS_T") -> "ClauseElement":
         """Generates the join statements for each given alias"""
         stmt = stmt.select_from(table)
-        for join_steps in joins.values():
+        for alias_name, join_steps in joins.items():
             prev_table = table
-            for colname, join_method, join_class, join_colname in join_steps:
-                join_table = self._metadata.tables[join_class]
+            last = len(join_steps) - 1
+            for i, (colname, join_method, join_class, join_colname) in enumerate(join_steps):
+                join_table = self._table(join_class).alias(
+                    alias_name if i == last else f"{alias_name}{i}"
+                )
                 stmt = stmt.join(
                     join_table,
                     self._cmp(
