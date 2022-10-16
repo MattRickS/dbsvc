@@ -144,10 +144,8 @@ def test_create__id_manager__success(memdb):
             {
                 "tablename": "Shot",
                 "joins": {
-                    "Asset": [
-                        ("id", "eq", "AssetXShot", "shot_id"),
-                        ("asset_id", "eq", "Asset", "id"),
-                    ]
+                    "ShotAssets": ("Shot", "id", "eq", "AssetXShot", "shot_id"),
+                    "Asset": ("ShotAssets", "asset_id", "eq", "Asset", "id"),
                 },
                 "ordering": [
                     ("Asset.id", constants.Order.Desc),
@@ -167,24 +165,22 @@ def test_create__id_manager__success(memdb):
         (
             {
                 "tablename": "Shot",
-                "colnames": ["*", "Asset.*"],
+                "colnames": ["*", "AssetAlias.*"],
                 "joins": {
-                    "Asset": [
-                        ("id", "eq", "AssetXShot", "shot_id"),
-                        ("asset_id", "eq", "Asset", "id"),
-                    ]
+                    "ShotAssets": ("Shot", "id", "eq", "AssetXShot", "shot_id"),
+                    "AssetAlias": ("ShotAssets", "asset_id", "eq", "Asset", "id"),
                 },
                 "filters": {
                     "or": [
-                        {"gt": {"id": 1}, "lt": {"Asset.id": 2}},
-                        {"eq": {"Asset.name": "AstonMartin"}},
+                        {"gt": {"id": 1}, "lt": {"AssetAlias.id": 2}},
+                        {"eq": {"AssetAlias.name": "AstonMartin"}},
                     ]
                 },
             },
             [
-                {"id": 1, "name": "First", "Asset.id": 3, "Asset.name": "AstonMartin"},
-                {"id": 2, "name": "Second", "Asset.id": 1, "Asset.name": "James"},
-                {"id": 3, "name": "Third", "Asset.id": 1, "Asset.name": "James"},
+                {"id": 1, "name": "First", "AssetAlias.id": 3, "AssetAlias.name": "AstonMartin"},
+                {"id": 2, "name": "Second", "AssetAlias.id": 1, "AssetAlias.name": "James"},
+                {"id": 3, "name": "Third", "AssetAlias.id": 1, "AssetAlias.name": "James"},
             ],
         ),
     ],
@@ -226,7 +222,7 @@ def test_read__invalid_filters__fails(memdb, kwargs):
         # Requests alias without a matching join
         {"tablename": "Shot", "filters": {"eq": {"Asset.name": "Gun"}}},
         # Join table is invalid
-        {"tablename": "Shot", "joins": {"Asset": [("id", "eq", "Banana", "id")]}},
+        {"tablename": "Shot", "joins": {"Asset": ("Shot", "id", "eq", "Banana", "id")}},
     ],
 )
 def test_read__invalid_schema__fails(memdb, kwargs):

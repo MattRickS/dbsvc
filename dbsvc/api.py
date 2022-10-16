@@ -167,14 +167,51 @@ class Database:
         ordering: List[Tuple[str, constants.Order]] = None,
         transaction: "Connection" = None,
     ) -> Iterator["ENTITY_T"]:
-        """Reads `colnames` for all rows matching `filters`"""
+        """
+        Reads `colnames` for all rows matching `filters`.
+
+        Args:
+            tablename: Table to read from.
+            colnames: Columns to read. Can be in either '{column}' or '{name}.{column}'
+                format. The former will assume the column reads from the `tablename`,
+                while the latter can either explictly define the `tablename` or use one
+                of the alias names provided to the `joins` parameter, eg,
+                    read("Shot", ["id", "Shot.name", "Project.id"], joins={"Project": ...})
+                will read 'id' and 'name' from the Shot table, and 'id' from the table
+                the 'Project' alias refers to (See `joins` docstring for more detail).
+            filters: A dictionary of comparison methods mapped to column:value pairs, eg
+                {
+                    "eq": {"name": "value", "id": 1}
+                }
+                The exception is the "or" method which takes a list of filters, and will
+                return all rows matching any of the subfilters.
+                Column names may also use either '{column}' or '{name}.{column}' syntax
+                (See `colnames` and `joins` for more details).
+            joins: A dictionary of table aliases mapped to a list of properties defining
+                how they join to another table, in the format
+                (start_table_or_alias, column, method, join_table, column). The initial
+                table in the join must either refer to the `tablename` or another alias
+                in the `joins` dict, or an InvalidJoin error will be raised. Example:
+                {
+                    "sequence": ["Shot", "sequence_id", "eq", "Sequence", "id"],
+                    "project": ["sequence", "project_id", "eq", "Project", "id"],
+                }
+            limit: Max number of rows to return. It is important to note that when using
+                `joins`, only one row is returned, even if there are many rows of
+                another table joined to one row of the initial `tablename`.
+            ordering: List of (column, direction) pairs, eg, [("id", Order.Desc)]
+
+        Returns:
+            Iterator of dictionaries containing column:value pairs for each column in
+                `colnames`, for each row that matches the filters.
+        """
         table = self._table(tablename)
         alias_tables = self._validate_joins(joins) if joins else None
         columns = self._select_columns(table, colnames, alias_tables=alias_tables)
         stmt = select(*columns)
 
         if joins:
-            stmt = self._joins(stmt, table, joins)
+            stmt = self._joins(stmt, table, joins, alias_tables)
 
         if filters:
             where_clause = self._filters(table, filters, alias_tables=alias_tables)
@@ -328,8 +365,8 @@ class Database:
     - class: Shot
       alias: assets
       joins:
-      - ["id", "shot_id", "AssetShot"]
-      - ["asset_id", "id", "Asset"]
+        ShotAssets: ["Shot", "id", "eq", "shot_id", "AssetShot"]
+        assets: ["Asset", "asset_id", "eq", "id", "Asset"]
       default_columns: ["*"]
     
     Can then by used like
@@ -416,29 +453,37 @@ class Database:
     def _validate_joins(self, joins: "JOINS_T") -> "ALIAS_TABLES_T":
         """Ensures joins are in a valid format and returns a mapping of alias to the final table"""
         alias_tables = {}
-        for alias, join_steps in joins.items():
-            if not join_steps:
-                raise exceptions.InvalidJoin("Joins require at least one set of fields")
-            for steps in join_steps:
-                if len(steps) != 4:
-                    raise exceptions.InvalidJoin("Each join step requires four parameters")
-            alias_tables[alias] = self._table(join_steps[-1][-2])
+        for alias, join_step in joins.items():
+            if len(join_step) != 5:
+                raise exceptions.InvalidJoin(
+                    "Each join step requires five parameters"
+                    " (start_table_or_alias, colname, method, join_table, colname)"
+                )
+            alias_tables[alias] = self._table(join_step[-2]).alias(alias)
 
         return alias_tables
 
-    # TODO: Alter this so that it's a single "join step" per alias.
-    #       But how to ensure they're constructed in order? Would need to sort by dependency, should be doable
-    def _joins(self, stmt: "ClauseElement", table: "Table", joins: "JOINS_T") -> "ClauseElement":
+    def _joins(
+        self,
+        stmt: "ClauseElement",
+        table: "Table",
+        joins: "JOINS_T",
+        alias_tables: "ALIAS_TABLES_T",
+    ) -> "ClauseElement":
         """Generates the join statements for each given alias"""
+        processed = {table.name: table}
         stmt = stmt.select_from(table)
-        for alias_name, join_steps in joins.items():
-            prev_table = table
-            last = len(join_steps) - 1
-            for i, (colname, join_method, join_class, join_colname) in enumerate(join_steps):
-                join_table = self._table(join_class).alias(
-                    alias_name if i == last else f"{alias_name}{i}"
-                )
-                stmt = stmt.join(
+
+        # XXX: Technically should provide options for left/full/outer joins
+        def _build_join_step(
+            stmt, alias_name, start_table_or_alias, colname, join_method, _, join_colname
+        ):
+            prev_table = processed.get(start_table_or_alias)
+            # Joining onto the primary table or an already processed join statement
+            if prev_table is not None:
+                join_table = alias_tables[alias_name]
+                processed[alias_name] = join_table
+                return stmt.join(
                     join_table,
                     self._cmp(
                         self._column(prev_table, colname),
@@ -446,7 +491,22 @@ class Database:
                         self._column(join_table, join_colname),
                     ),
                 )
-                prev_table = join_table
+
+            # Is attempting to join onto an alias that wasn't provided
+            join_step = joins.get(start_table_or_alias)
+            if join_step is None:
+                raise exceptions.InvalidJoin(
+                    f"Join for alias {alias_name} has no matching start table/alias: {start_table_or_alias}"
+                )
+
+            return _build_join_step(stmt, start_table_or_alias, *join_step)
+
+        for alias_name, join_step in joins.items():
+            # Alias may already have been processed by recursive calls from previous joins
+            if alias_name in processed:
+                continue
+            stmt = _build_join_step(stmt, alias_name, *join_step)
+
         return stmt
 
     def _filters(
