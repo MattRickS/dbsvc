@@ -90,6 +90,7 @@ class Schema(api.Schema):
             "Task",
             metadata,
             Column("id", Integer, primary_key=True),
+            Column("project_id", Integer, nullable=False),
             Column("entity_table", String, nullable=False),
             Column("entity_id", Integer, nullable=False),
             Column("name", String, nullable=False),
@@ -102,6 +103,7 @@ class Schema(api.Schema):
             task_table.c.entity_table,
             task_table.c.entity_id,
             task_table.c.name,
+            task_table.c.project_id,
             unique=True,
         )
 
@@ -154,6 +156,11 @@ class Schema(api.Schema):
             output_table.c.task,
             output_table.c.datatype,
             output_table.c.variant,
+            output_table.c.lod,
+            # XXX: Can name/instance be merged? Pipeline separates them unless
+            #      shot pipeline needs name...?
+            output_table.c.name,
+            output_table.c.instance,
             output_table.c.version,
             unique=True,
         )
