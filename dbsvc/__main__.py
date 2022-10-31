@@ -5,7 +5,7 @@ Loads a super basic animation studio schema with in-memory sqlite db.
 """
 import click
 
-from sqlalchemy import func, Boolean, Column, DateTime, Index, Integer, String, Table
+from sqlalchemy import func, Boolean, Column, DateTime, Index, Integer, LargeBinary, String, Table
 
 from dbsvc import api, service
 
@@ -126,6 +126,7 @@ class Schema(api.Schema):
             Column("format", String, nullable=False),
             Column("pathtemplate", String, nullable=False),
             Column("relative_path", String, nullable=False, index=True, unique=True),
+            Column("source_id", Integer, nullable=False),  # Identifier for where the output came from
             # Specific datatype/context fields
             Column("frame_range", String),  # eg, 1-10,19
             Column("name", String),  # Uniqueness identifier, eg, texture names
@@ -145,6 +146,10 @@ class Schema(api.Schema):
             Column("status", Integer, default=0),
             Column("status_at", DateTime, default=None),
             Column("status_by", String, default=None),
+            Column("is_deleted", Boolean, default=False),
+            Column("deleted_at", DateTime, default=None),
+            Column("deleted_by", String, default=None),
+            Column("metadata", LargeBinary(256), default=None),
         )
         Index(
             "unique_output",
